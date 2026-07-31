@@ -1,8 +1,9 @@
 # WireKey (AutoTyper)
 
-WireKey (hosted as AutoTyper) is an Android application that turns your smartphone into a fully functional Bluetooth HID keyboard. It operates seamlessly without requiring any custom client software on the host computer.
+WireKey (hosted as AutoTyper) is an Android application that turns your smartphone into a fully functional Bluetooth HID keyboard. It operates seamlessly without requiring any custom client software on the host computer. A core feature of this application is its ability to intelligently simulate human typing styles—using dynamic keystroke cadence and Markov models—to appear as a natural human typist.
 
 ## Features
+- **Human-Like Typing Engine**: Emulates realistic human typing cadences and pauses to accurately copy human typing styles.
 - **Plug and Play**: No host software needed. Works out of the box with standard Bluetooth.
 - **Cross-Platform**: Supports Windows, macOS, Linux, iPadOS, and ChromeOS.
 - **Low Latency**: Utilizes Android's native `BluetoothHidDevice` API for immediate typing response.
