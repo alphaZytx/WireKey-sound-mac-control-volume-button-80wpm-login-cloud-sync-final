@@ -296,5 +296,9 @@ class HidKeyboardController(private val context: Context) {
             bluetoothManager.adapter?.closeProfileProxy(BluetoothProfile.HID_DEVICE, hid)
         }
         hidDevice = null
+        connectedDevice = null
+        pendingConnectionDevice = null
+        isInitialized = false
+        _connectionState.value = HidConnectionState.Unregistered
     }
 }

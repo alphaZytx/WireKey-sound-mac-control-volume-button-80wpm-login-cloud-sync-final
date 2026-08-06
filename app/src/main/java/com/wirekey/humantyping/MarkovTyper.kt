@@ -254,7 +254,11 @@ class MarkovTyper(
         if (activeCognitiveTypo == null && Random.nextDouble() < HumanTypingConfig.PROB_COGNITIVE_ERROR) {
             val matches = CognitiveDictionary.filter { targetText.startsWith(it.first, startIndex = mentalCursorPos) }
             if (matches.isNotEmpty()) {
-                val match = matches.random()
+                // Prefer the longest (most specific) match — shorter entries are often
+                // prefixes of longer ones (e.g. "==" of "==="), which would otherwise
+                // cause a false-positive "typo" on text that was already correct.
+                val longestLen = matches.maxOf { it.first.length }
+                val match = matches.filter { it.first.length == longestLen }.random()
                 val isStart = mentalCursorPos == 0 || !targetText[mentalCursorPos - 1].isLetterOrDigit()
                 val isSymbol = !match.first[0].isLetterOrDigit()
                 if (isStart || isSymbol) {
@@ -301,7 +305,7 @@ class MarkovTyper(
                 val isStartOfWord = mentalCursorPos == 1 || !targetText[mentalCursorPos - 2].isLetter()
                 if (isStartOfWord) {
                     val currentWord = getCurrentWordContext() ?: ""
-                    val isDsaTarget = DsaDictionary.contains(currentWord)
+                    val isDsaTarget = DsaDictionary.contains(currentWord.lowercase())
                     
                     val prob = if (isDsaTarget) HumanTypingConfig.PROB_SHIFT_SYNC_ERROR * 1.5 else HumanTypingConfig.PROB_SHIFT_SYNC_ERROR
                     
@@ -440,10 +444,6 @@ class MarkovTyper(
             "Ans", "Result", "Count", "Length", "Size", "Mid", "Left", "Right", 
             "Max", "Min", "System.out", "Console.log", "ToString", "HasNext"
         ).map { it.lowercase() }.toSet()
-
-        private fun Set<String>.contains(word: String): Boolean {
-            return this.contains(word.lowercase())
-        }
 
         /**
          * Dictionary of common cognitive muscle-memory errors (intended to typo).

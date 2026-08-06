@@ -20,6 +20,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -164,7 +165,7 @@ fun StickyModifierButton(label: String, isActive: Boolean, onClick: () -> Unit) 
 
 @Composable
 fun TypingSurface(viewModel: LiveModeViewModel) {
-    var text by remember { mutableStateOf("") }
+    var fieldValue by remember { mutableStateOf(TextFieldValue("")) }
     val focusRequester = remember { FocusRequester() }
 
     Box(
@@ -176,26 +177,16 @@ fun TypingSurface(viewModel: LiveModeViewModel) {
         contentAlignment = Alignment.TopStart
     ) {
         BasicTextField(
-            value = text,
+            value = fieldValue,
             onValueChange = { newValue ->
-                val oldLen = text.length
-                val newLen = newValue.length
-                
-                if (newLen > oldLen) {
-                    // Characters were added (typed or pasted)
-                    val added = newValue.substring(oldLen)
-                    for (char in added) {
-                        viewModel.sendCharacter(char)
-                    }
-                } else if (newLen < oldLen) {
-                    // Characters were deleted (Backspace)
-                    val diff = oldLen - newLen
-                    repeat(diff) {
-                        viewModel.sendSpecialKey(HidKeyCodes.KEY_BACKSPACE)
-                    }
+                if (newValue.text != fieldValue.text || newValue.selection != fieldValue.selection) {
+                    viewModel.applyLocalEdit(
+                        oldText = fieldValue.text,
+                        newText = newValue.text,
+                        newCursorPos = newValue.selection.end
+                    )
                 }
-                
-                text = newValue
+                fieldValue = newValue
             },
             modifier = Modifier
                 .fillMaxSize()
@@ -210,8 +201,8 @@ fun TypingSurface(viewModel: LiveModeViewModel) {
             ),
             cursorBrush = SolidColor(MaterialTheme.colorScheme.primary)
         )
-        
-        if (text.isEmpty()) {
+
+        if (fieldValue.text.isEmpty()) {
             Text(
                 text = "Tap here and start typing...",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
