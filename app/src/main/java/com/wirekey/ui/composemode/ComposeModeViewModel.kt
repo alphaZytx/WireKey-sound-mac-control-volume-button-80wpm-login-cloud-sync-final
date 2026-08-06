@@ -65,6 +65,37 @@ class ComposeModeViewModel : ViewModel() {
         a >= 0 || b >= 0
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
+    val activeCharIndex: StateFlow<Int> = combine(
+        typingManager.activeCharIndex,
+        _markerA
+    ) { activeIndex, startMarker ->
+        if (activeIndex < 0) -1 else activeIndex + kotlin.math.max(0, startMarker)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), -1)
+
+    // ── Sent Text Trail (permanent record) ────────────────────────────────────
+    // Each completed or cancelled send commits the exact [start, end] range that
+    // was actually left on the host, using typingManager.lastSentCharIndex — a
+    // dedicated counter that already retreats on backspace corrections and is
+    // fully decoupled from activeCharIndex's transient cursor-highlight resets.
+    // The start offset is captured once, when the send begins, and never re-read
+    // afterwards — so moving markers or toggling placement mode for the *next*
+    // selection can never retroactively shift or clear an already-shaded range.
+    private val _sentTrailRanges = MutableStateFlow<List<IntRange>>(emptyList())
+
+    // Absolute (draft-relative) offset where the in-flight send started; -1 when idle.
+    private val _pendingTrailStart = MutableStateFlow(-1)
+
+    /** Committed history + the in-progress send's growing range, ready for the UI to draw. */
+    val displayedTrailRanges: StateFlow<List<IntRange>> = combine(
+        _sentTrailRanges, _pendingTrailStart, typingManager.lastSentCharIndex
+    ) { committed, start, lastSentRelative ->
+        if (start >= 0 && lastSentRelative > 0) {
+            committed + IntRange(start, start + lastSentRelative)
+        } else {
+            committed
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     // Observe settings from DataStore dynamically
     val cadenceSettings: StateFlow<CadenceSettings> = combine(
         settingsRepo.targetWpm,
@@ -93,6 +124,26 @@ class ComposeModeViewModel : ViewModel() {
                 val sentText = _lastSentText
                 if (sentText.isNotBlank()) {
                     settingsRepo.addToHistory(sentText)
+                }
+            }
+        }
+
+        // Freeze this send's start the instant it begins, then fold the range it
+        // actually covered into the permanent trail history the instant it ends
+        // (completion or cancellation) — read directly from lastSentCharIndex's
+        // current value, not a copy tracked in parallel, so there's no race with
+        // its own StateFlow delivery.
+        viewModelScope.launch {
+            isSending.collect { sending ->
+                if (sending) {
+                    _pendingTrailStart.value = _markerA.value.coerceAtLeast(0)
+                } else {
+                    val start = _pendingTrailStart.value
+                    val lastSentRelative = typingManager.lastSentCharIndex.value
+                    if (start >= 0 && lastSentRelative > 0) {
+                        _sentTrailRanges.value = _sentTrailRanges.value + IntRange(start, start + lastSentRelative)
+                    }
+                    _pendingTrailStart.value = -1
                 }
             }
         }
@@ -190,11 +241,25 @@ class ComposeModeViewModel : ViewModel() {
         if (_markerA.value >= 0 && _markerB.value >= 0 && _markerA.value >= _markerB.value) {
             _markerB.value = -1
         }
+        // Trail ranges behave like SPAN_EXCLUSIVE_EXCLUSIVE spans: when the user
+        // manually deletes text, clamp each range's boundaries down to the new
+        // (shorter) length so the shading is trimmed along with it, and drop any
+        // range that's been entirely deleted.
+        if (_sentTrailRanges.value.isNotEmpty()) {
+            _sentTrailRanges.value = _sentTrailRanges.value.mapNotNull { range ->
+                val newStart = range.first.coerceAtMost(len)
+                val newEnd = range.last.coerceAtMost(len)
+                if (newEnd > newStart) newStart..newEnd else null
+            }
+        }
     }
 
+    /** The only manual way to wipe the sent-text shading: clearing the draft entirely. */
     fun clearDraftText() {
         _draftText.value = ""
         clearMarkers()
+        _sentTrailRanges.value = emptyList()
+        _pendingTrailStart.value = -1
     }
 
     /** Populates the draft box with a past message. Blocked mid-send (unless paused) to avoid clobbering it. */

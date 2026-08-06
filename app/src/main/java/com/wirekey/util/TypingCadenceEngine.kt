@@ -39,7 +39,8 @@ data class CadenceSettings(
 data class PlannedKeystroke(
     val delayMs: Long,
     val char: Char?,
-    val isBackspace: Boolean
+    val isBackspace: Boolean,
+    val originalIndex: Int? = null
 )
 
 object TypingCadenceEngine {
@@ -354,12 +355,12 @@ object TypingCadenceEngine {
 
             when (event.action) {
                 TypingAction.BACKSPACE -> {
-                    plan.add(PlannedKeystroke(delayMs = delayMs, char = null, isBackspace = true))
+                    plan.add(PlannedKeystroke(delayMs = delayMs, char = null, isBackspace = true, originalIndex = event.mentalCursorPos))
                 }
                 TypingAction.TYPED, TypingAction.TYPED_ERROR -> {
                     val char = event.character.firstOrNull()
                     if (char != null) {
-                        plan.add(PlannedKeystroke(delayMs = delayMs, char = char, isBackspace = false))
+                        plan.add(PlannedKeystroke(delayMs = delayMs, char = char, isBackspace = false, originalIndex = event.mentalCursorPos))
                     }
                 }
                 TypingAction.TYPED_SWAP -> {
@@ -367,8 +368,8 @@ object TypingCadenceEngine {
                     // The delay is for the first character; second gets a minimal gap.
                     val chars = event.character
                     if (chars.length >= 2) {
-                        plan.add(PlannedKeystroke(delayMs = delayMs, char = chars[0], isBackspace = false))
-                        plan.add(PlannedKeystroke(delayMs = 0L, char = chars[1], isBackspace = false))
+                        plan.add(PlannedKeystroke(delayMs = delayMs, char = chars[0], isBackspace = false, originalIndex = event.mentalCursorPos))
+                        plan.add(PlannedKeystroke(delayMs = 0L, char = chars[1], isBackspace = false, originalIndex = event.mentalCursorPos + 1))
                     }
                 }
             }
@@ -385,13 +386,14 @@ object TypingCadenceEngine {
         val plan = mutableListOf<PlannedKeystroke>()
         var previousChar: Char? = null
 
-        for (char in text) {
+        for (i in text.indices) {
+            val char = text[i]
             val delayMs = if (previousChar != null) {
                 delayForChar(char, previousChar, settings)
             } else {
                 0L
             }
-            plan.add(PlannedKeystroke(delayMs = delayMs, char = char, isBackspace = false))
+            plan.add(PlannedKeystroke(delayMs = delayMs, char = char, isBackspace = false, originalIndex = i))
             previousChar = char
         }
 

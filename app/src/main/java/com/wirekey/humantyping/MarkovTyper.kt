@@ -16,7 +16,8 @@ data class TypingEvent(
     val timestampSeconds: Double,
     val action: TypingAction,
     val character: String,
-    val currentText: String
+    val currentText: String,
+    val mentalCursorPos: Int = 0
 )
 
 /** The type of action in a [TypingEvent]. */
@@ -232,11 +233,12 @@ class MarkovTyper(
                 totalTime += dt
                 currentText.deleteCharAt(currentText.length - 1)
 
-                val event = TypingEvent(totalTime, TypingAction.BACKSPACE, "", currentText.toString())
-                history.add(event)
-
                 // Sync mental cursor immediately
                 mentalCursorPos = currentText.length
+
+                val event = TypingEvent(totalTime, TypingAction.BACKSPACE, "", currentText.toString(), mentalCursorPos)
+                history.add(event)
+
                 return event
             }
         }
@@ -288,7 +290,7 @@ class MarkovTyper(
             currentText.append(charIntended)
             lastCharTyped = charIntended
             val action = if (isCognitiveTyping) TypingAction.TYPED_ERROR else TypingAction.TYPED
-            val event = TypingEvent(totalTime, action, charIntended.toString(), currentText.toString())
+            val event = TypingEvent(totalTime, action, charIntended.toString(), currentText.toString(), mentalCursorPos)
             history.add(event)
             mentalCursorPos++
             return event
@@ -315,7 +317,7 @@ class MarkovTyper(
                         totalTime += dt
                         currentText.append(wrongChar)
                         lastCharTyped = wrongChar
-                        val event = TypingEvent(totalTime, TypingAction.TYPED_ERROR, wrongChar.toString(), currentText.toString())
+                        val event = TypingEvent(totalTime, TypingAction.TYPED_ERROR, wrongChar.toString(), currentText.toString(), mentalCursorPos)
                         history.add(event)
                         mentalCursorPos++
                         return event
@@ -345,7 +347,8 @@ class MarkovTyper(
                         totalTime,
                         TypingAction.TYPED_SWAP,
                         "$charAfter$charIntended",
-                        currentText.toString()
+                        currentText.toString(),
+                        mentalCursorPos
                     )
                     history.add(event)
                     mentalCursorPos += 2
@@ -376,7 +379,7 @@ class MarkovTyper(
             totalTime += dt
             currentText.append(wrongChar)
             lastCharTyped = wrongChar
-            val event = TypingEvent(totalTime, TypingAction.TYPED_ERROR, wrongChar.toString(), currentText.toString())
+            val event = TypingEvent(totalTime, TypingAction.TYPED_ERROR, wrongChar.toString(), currentText.toString(), mentalCursorPos)
             history.add(event)
             mentalCursorPos++
             event
@@ -386,7 +389,7 @@ class MarkovTyper(
             totalTime += dt
             currentText.append(charIntended)
             lastCharTyped = charIntended
-            val event = TypingEvent(totalTime, TypingAction.TYPED, charIntended.toString(), currentText.toString())
+            val event = TypingEvent(totalTime, TypingAction.TYPED, charIntended.toString(), currentText.toString(), mentalCursorPos)
             history.add(event)
             mentalCursorPos++
             event

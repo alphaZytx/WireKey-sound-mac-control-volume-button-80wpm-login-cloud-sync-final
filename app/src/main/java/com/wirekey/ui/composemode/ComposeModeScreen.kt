@@ -26,6 +26,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextLayoutResult
@@ -58,6 +59,9 @@ fun ComposeModeScreen(
     val cadenceSettings by viewModel.cadenceSettings.collectAsState()
     val connectionState by viewModel.connectionState.collectAsState()
     val sendHistory by viewModel.sendHistory.collectAsState()
+
+    val activeCharIndex by viewModel.activeCharIndex.collectAsState()
+    val sentTrailRanges by viewModel.displayedTrailRanges.collectAsState()
 
     val markerA by viewModel.markerA.collectAsState()
     val markerB by viewModel.markerB.collectAsState()
@@ -141,6 +145,8 @@ fun ComposeModeScreen(
                 readOnly = isSending,
                 markerAOffset = markerA,
                 markerBOffset = markerB,
+                activeCharIndex = activeCharIndex,
+                sentTrailRanges = sentTrailRanges,
                 placementMode = placementMode,
                 onTapForPlacement = { offset -> viewModel.onTextFieldTapForPlacement(offset) }
             )
@@ -673,6 +679,8 @@ fun CodeEditorTextField(
     readOnly: Boolean = false,
     markerAOffset: Int = -1,
     markerBOffset: Int = -1,
+    activeCharIndex: Int = -1,
+    sentTrailRanges: List<IntRange> = emptyList(),
     placementMode: MarkerPlacementMode = MarkerPlacementMode.NONE,
     onTapForPlacement: ((Int) -> Unit)? = null
 ) {
@@ -700,10 +708,53 @@ fun CodeEditorTextField(
     val markerAColor = Color(0xFF43A047)   // green
     val markerBColor = Color(0xFFE53935)   // red
     val selectionTintColor = Color(0x2243A047) // subtle green tint for A→B region
+    val activeCharColor = Color(0x66FFEB3B) // yellow highlight for active char
+    val sentTrailColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f) // sent-text shading
 
     // textLayoutResult is updated by BasicTextField's onTextLayout callback and used
     // to convert character offsets → pixel positions for drawing the marker bars.
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+    
+    var boxHeight by remember { mutableIntStateOf(0) }
+    var boxWidth by remember { mutableIntStateOf(0) }
+    
+    LaunchedEffect(activeCharIndex, boxHeight, boxWidth, textLayoutResult) {
+        if (activeCharIndex >= 0 && boxHeight > 0) {
+            textLayoutResult?.let { layoutResult ->
+                val safeIndex = activeCharIndex.coerceIn(0, maxOf(0, value.length - 1))
+                if (safeIndex < value.length) {
+                    val rect = layoutResult.getBoundingBox(safeIndex)
+                    
+                    val yTop = rect.top + paddingTopPx
+                    val yBottom = rect.bottom + paddingTopPx
+                    
+                    val currentScrollY = verticalScrollState.value
+                    val visibleTop = currentScrollY.toFloat()
+                    val visibleBottom = currentScrollY + boxHeight.toFloat()
+                    
+                    if (yBottom > visibleBottom) {
+                        verticalScrollState.animateScrollTo((yBottom - boxHeight + lineHeightPx).toInt().coerceAtLeast(0))
+                    } else if (yTop < visibleTop) {
+                        verticalScrollState.animateScrollTo((yTop - lineHeightPx).toInt().coerceAtLeast(0))
+                    }
+                    
+                    val gutterWidthPx = with(density) { 40.dp.toPx() }
+                    val xLeft = rect.left + gutterWidthPx
+                    val xRight = rect.right + gutterWidthPx
+                    
+                    val currentScrollX = horizontalScrollState.value
+                    val visibleLeft = currentScrollX.toFloat() + gutterWidthPx
+                    val visibleRight = currentScrollX + boxWidth.toFloat()
+                    
+                    if (xRight > visibleRight) {
+                        horizontalScrollState.animateScrollTo((xRight - boxWidth + 50f).toInt().coerceAtLeast(0))
+                    } else if (xLeft < visibleLeft) {
+                        horizontalScrollState.animateScrollTo((xLeft - gutterWidthPx - 50f).toInt().coerceAtLeast(0))
+                    }
+                }
+            }
+        }
+    }
 
     Box(
         modifier = modifier
@@ -751,6 +802,10 @@ fun CodeEditorTextField(
         Row(
             modifier = Modifier
                 .fillMaxSize()
+                .onGloballyPositioned { coordinates ->
+                    boxHeight = coordinates.size.height
+                    boxWidth = coordinates.size.width
+                }
                 .verticalScroll(verticalScrollState)
         ) {
             // Gutter Numbers
@@ -805,6 +860,19 @@ fun CodeEditorTextField(
                                 val tlr = textLayoutResult ?: return@drawBehind
                                 val textLen = value.length
 
+                                // Draw the "sent text" trail shading. Each committed range is
+                                // frozen at the exact [start, end) the keystroke loop actually
+                                // covered — drawn as its own path, never derived from the live
+                                // marker offsets, so it can't drift when markers move later.
+                                for (range in sentTrailRanges) {
+                                    val rangeStart = range.first.coerceIn(0, textLen)
+                                    val rangeEnd = range.last.coerceIn(0, textLen)
+                                    if (rangeEnd > rangeStart) {
+                                        val trailPath = tlr.getPathForRange(rangeStart, rangeEnd)
+                                        drawPath(path = trailPath, color = sentTrailColor)
+                                    }
+                                }
+
                                 // Draw selection tint between A and B
                                 if (markerAOffset in 0..textLen &&
                                     markerBOffset in 0..textLen &&
@@ -849,6 +917,16 @@ fun CodeEditorTextField(
                                         size = Size(sqSize, sqSize * 0.6f)
                                     )
                                 }
+                                
+                                // Draw Active Character Highlight
+                                if (activeCharIndex in 0 until textLen) {
+                                    val rect = tlr.getBoundingBox(activeCharIndex)
+                                    drawRect(
+                                        color = activeCharColor,
+                                        topLeft = Offset(rect.left, rect.top),
+                                        size = Size(rect.width, rect.height)
+                                    )
+                                }
                             }
                     ) {
                         // Render text using BasicText (foundation) instead of
@@ -890,6 +968,19 @@ fun CodeEditorTextField(
                                 modifier = Modifier.drawBehind {
                                     val tlr = textLayoutResult ?: return@drawBehind
                                     val textLen = value.length
+
+                                    // Draw the "sent text" trail shading. Each committed range is
+                                    // frozen at the exact [start, end) the keystroke loop actually
+                                    // covered — drawn as its own path, never derived from the live
+                                    // marker offsets, so it can't drift when markers move later.
+                                    for (range in sentTrailRanges) {
+                                        val rangeStart = range.first.coerceIn(0, textLen)
+                                        val rangeEnd = range.last.coerceIn(0, textLen)
+                                        if (rangeEnd > rangeStart) {
+                                            val trailPath = tlr.getPathForRange(rangeStart, rangeEnd)
+                                            drawPath(path = trailPath, color = sentTrailColor)
+                                        }
+                                    }
 
                                     // Draw selection tint between A and B
                                     if (markerAOffset in 0..textLen &&
@@ -937,6 +1028,16 @@ fun CodeEditorTextField(
                                             color = markerBColor,
                                             topLeft = Offset(rect.left, rect.top),
                                             size = Size(sqSize, sqSize * 0.6f)
+                                        )
+                                    }
+                                    
+                                    // Draw Active Character Highlight
+                                    if (activeCharIndex in 0 until textLen) {
+                                        val rect = tlr.getBoundingBox(activeCharIndex)
+                                        drawRect(
+                                            color = activeCharColor,
+                                            topLeft = Offset(rect.left, rect.top),
+                                            size = Size(rect.width, rect.height)
                                         )
                                     }
                                 }

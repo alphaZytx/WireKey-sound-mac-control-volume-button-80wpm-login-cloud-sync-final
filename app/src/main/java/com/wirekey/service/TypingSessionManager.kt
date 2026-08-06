@@ -46,6 +46,19 @@ class TypingSessionManager(private val context: Context) {
     private val _dynamicWpm = MutableStateFlow(60)
     val dynamicWpm: StateFlow<Int> = _dynamicWpm.asStateFlow()
 
+    private val _activeCharIndex = MutableStateFlow(-1)
+    val activeCharIndex: StateFlow<Int> = _activeCharIndex.asStateFlow()
+
+    // Highest index (relative to the text passed to sendToPc) that is currently
+    // actually present on the host. Unlike activeCharIndex — which is a transient
+    // cursor-highlight position the manager resets to -1 the moment a send ends —
+    // this is monotonic *within* a send (it retreats on backspace, since those
+    // characters are no longer on the host) and is only reset to -1 when a new
+    // send begins, so callers can read its final value after completion/cancel
+    // to know exactly what was left behind.
+    private val _lastSentCharIndex = MutableStateFlow(-1)
+    val lastSentCharIndex: StateFlow<Int> = _lastSentCharIndex.asStateFlow()
+
     fun updateDynamicWpm(wpm: Int) {
         _dynamicWpm.value = wpm
     }
@@ -98,7 +111,9 @@ class TypingSessionManager(private val context: Context) {
         _sendProgress.value = 0f
         _remainingTimeMs.value = 0L
         _dynamicWpm.value = settings.targetWpm
-        
+        _activeCharIndex.value = -1
+        _lastSentCharIndex.value = -1
+
         startService()
 
         val oldJob = sendJob
@@ -135,6 +150,10 @@ class TypingSessionManager(private val context: Context) {
                 var i = 0
                 while (i < plan.size) {
                     val keystroke = plan[i]
+                    
+                    if (keystroke.originalIndex != null) {
+                        _activeCharIndex.value = keystroke.originalIndex
+                    }
 
                     while (_isPaused.value) { delay(50) }
 
@@ -146,20 +165,43 @@ class TypingSessionManager(private val context: Context) {
 
                     if (keystroke.isBackspace) {
                         var backspaceCount = 1
+                        val backspaceIndices = mutableListOf<Int?>()
+                        backspaceIndices.add(keystroke.originalIndex)
+                        
                         var j = i + 1
                         while (j < plan.size && plan[j].isBackspace) {
+                            backspaceIndices.add(plan[j].originalIndex)
                             backspaceCount++
                             j++
                         }
                         
-                        
-                        executeBackspaces(backspaceCount, currentMultiplier)
+                        executeBackspaces(backspaceCount, currentMultiplier) { idx ->
+                            val originalIndex = backspaceIndices.getOrNull(idx)
+                            if (originalIndex != null) {
+                                _activeCharIndex.value = originalIndex
+                            }
+                        }
                         
                         for (consumedIdx in i until i + backspaceCount) {
                             totalRemaining -= estimatedTimes[consumedIdx]
                             _remainingTimeMs.value = (totalRemaining.coerceAtLeast(0L) * currentMultiplier).toLong()
                             _sendProgress.value = (consumedIdx + 1).toFloat() / totalSteps
                         }
+
+                        // Backspacing removes characters from the host, so the
+                        // "actually sent" boundary must retreat to just before the
+                        // earliest character these backspaces deleted — never stay
+                        // parked past content that no longer exists on screen.
+                        val minBackspaceOriginal = backspaceIndices.filterNotNull().minOrNull()
+                        if (minBackspaceOriginal != null) {
+                            _lastSentCharIndex.value = minOf(_lastSentCharIndex.value, minBackspaceOriginal - 1)
+                        }
+
+                        val lastBackspace = plan[j - 1]
+                        if (lastBackspace.originalIndex != null) {
+                            _activeCharIndex.value = lastBackspace.originalIndex
+                        }
+                        
                         i += backspaceCount
                     } else {
                         val char = keystroke.char
@@ -185,6 +227,9 @@ class TypingSessionManager(private val context: Context) {
                                 // directly in the plan, so we no longer need to manually clear auto-indent here!
                             }
                         }
+                        if (keystroke.originalIndex != null) {
+                            _lastSentCharIndex.value = maxOf(_lastSentCharIndex.value, keystroke.originalIndex)
+                        }
                         totalRemaining -= estimatedTimes[i]
                         _remainingTimeMs.value = (totalRemaining.coerceAtLeast(0L) * currentMultiplier).toLong()
                         _sendProgress.value = (i + 1).toFloat() / totalSteps
@@ -200,6 +245,7 @@ class TypingSessionManager(private val context: Context) {
                     _isPaused.value = false
                     _sendProgress.value = 0f
                     _remainingTimeMs.value = 0L
+                    _activeCharIndex.value = -1
                     stopService()
                 }
             }
@@ -213,6 +259,7 @@ class TypingSessionManager(private val context: Context) {
         _isPaused.value = false
         _sendProgress.value = 0f
         _remainingTimeMs.value = 0L
+        _activeCharIndex.value = -1
         stopService()
     }
 
@@ -230,7 +277,7 @@ class TypingSessionManager(private val context: Context) {
         }
     }
 
-    private suspend fun executeBackspaces(count: Int, multiplier: Float = 1.0f) {
+    private suspend fun executeBackspaces(count: Int, multiplier: Float = 1.0f, onBackspace: (Int) -> Unit = {}) {
         if (count <= 0) return
         
         val down = HidReportBuilder.keyDownReport(HidKeyCodes.KEY_BACKSPACE)
@@ -241,6 +288,7 @@ class TypingSessionManager(private val context: Context) {
             for (k in 0 until count) {
                 while (_isPaused.value) { delay(50) }
                 
+                onBackspace(k)
                 controller.sendReport(down)
                 delay((15 * multiplier).toLong())
                 controller.sendReport(up)
@@ -268,6 +316,8 @@ class TypingSessionManager(private val context: Context) {
             // Holding Trigger: Simulate OS-level hold
             // 1st backspace (discrete tap)
             while (_isPaused.value) { delay(50) }
+            
+            onBackspace(0)
             controller.sendReport(down)
             delay((15 * multiplier).toLong())
             controller.sendReport(up)
@@ -286,6 +336,7 @@ class TypingSessionManager(private val context: Context) {
             for (k in 1 until count) {
                 while (_isPaused.value) { delay(50) }
                 
+                onBackspace(k)
                 controller.sendReport(down)
                 delay((15 * multiplier).toLong())
                 controller.sendReport(up)
