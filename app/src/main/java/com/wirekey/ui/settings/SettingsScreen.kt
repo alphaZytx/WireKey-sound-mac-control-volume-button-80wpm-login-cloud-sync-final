@@ -7,12 +7,19 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.wirekey.remote.BleRemoteControlState
+import com.wirekey.remote.LedReportLog
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -28,6 +35,16 @@ fun SettingsScreen(
     val naturalEnabled by viewModel.naturalTypingEnabled.collectAsState()
     val appTheme by viewModel.appTheme.collectAsState()
     val codeEditorMode by viewModel.codeEditorMode.collectAsState()
+    val acousticFeedbackEnabled by viewModel.acousticFeedbackEnabled.collectAsState()
+    val soundPackId by viewModel.soundPackId.collectAsState()
+
+    val remoteEnabled by viewModel.remoteControlEnabled.collectAsState()
+    val remoteHaptics by viewModel.remoteHapticsEnabled.collectAsState()
+    val remoteBleState by viewModel.remoteBleState.collectAsState()
+    val remoteReportLog by viewModel.remoteReportLog.collectAsState()
+    val remoteReportCount by viewModel.remoteReportCount.collectAsState()
+    val remoteHostActivityCount by viewModel.remoteHostActivityCount.collectAsState()
+    val remoteLastNotice by viewModel.remoteLastNotice.collectAsState()
 
     Scaffold(
         topBar = {
@@ -186,6 +203,149 @@ fun SettingsScreen(
                 }
             }
 
+            // ── Acoustic Typing Feedback Section ─────────────────────
+            SettingsSectionTitle("Acoustic Typing Feedback")
+
+            ListItem(
+                headlineContent = { Text("Keyboard Click Sounds") },
+                supportingContent = {
+                    Text("Plays real recorded MacBook keystroke sounds in sync with every key sent, in both Live and Compose Mode")
+                },
+                trailingContent = {
+                    Switch(
+                        checked = acousticFeedbackEnabled,
+                        onCheckedChange = { viewModel.setAcousticFeedbackEnabled(it) }
+                    )
+                }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Text("Keyboard Sound Profile", style = MaterialTheme.typography.bodyLarge)
+                Spacer(modifier = Modifier.height(8.dp))
+
+                var soundPackMenuExpanded by remember { mutableStateOf(false) }
+                val selectedPackName = viewModel.availableSoundPacks
+                    .firstOrNull { it.id == soundPackId }?.displayName ?: soundPackId
+
+                ExposedDropdownMenuBox(
+                    expanded = soundPackMenuExpanded,
+                    onExpandedChange = {
+                        if (acousticFeedbackEnabled) soundPackMenuExpanded = it
+                    }
+                ) {
+                    TextField(
+                        value = selectedPackName,
+                        onValueChange = {},
+                        readOnly = true,
+                        enabled = acousticFeedbackEnabled,
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = soundPackMenuExpanded)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = soundPackMenuExpanded,
+                        onDismissRequest = { soundPackMenuExpanded = false }
+                    ) {
+                        viewModel.availableSoundPacks.forEach { pack ->
+                            DropdownMenuItem(
+                                text = { Text(pack.displayName) },
+                                onClick = {
+                                    viewModel.setSoundPackId(pack.id)
+                                    soundPackMenuExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // ── Mac Remote Control Section ───────────────────────────
+            SettingsSectionTitle("Mac Remote Control")
+
+            ListItem(
+                headlineContent = { Text("Control sending from your Mac") },
+                supportingContent = {
+                    Text(
+                        "Use the WireKey Remote helper on your Mac. It detects two Caps Lock " +
+                        "presses and sends a direct Bluetooth LE command to this phone."
+                    )
+                },
+                trailingContent = {
+                    Switch(
+                        checked = remoteEnabled,
+                        onCheckedChange = { viewModel.setRemoteControlEnabled(it) }
+                    )
+                }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                )
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text("Bluetooth LE status", style = MaterialTheme.typography.titleSmall)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = bleRemoteStateLabel(remoteBleState),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (remoteBleState is BleRemoteControlState.Unavailable)
+                            MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                }
+            }
+
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Text(
+                    "Setup",
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "1. Turn this switch on.\n" +
+                        "2. Build and open WireKey Remote.app on your Mac.\n" +
+                        "3. Allow its Bluetooth and Input Monitoring permissions.\n" +
+                        "4. In Compose Mode, press Caps Lock twice to Start, Pause, or Resume.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            ListItem(
+                headlineContent = { Text("Vibrate on remote command") },
+                supportingContent = {
+                    Text("Different buzz patterns for Start, Pause, Resume and rejected — so you can tell what happened without looking at the phone")
+                },
+                trailingContent = {
+                    Switch(
+                        checked = remoteHaptics,
+                        onCheckedChange = { viewModel.setRemoteHapticsEnabled(it) },
+                        enabled = remoteEnabled
+                    )
+                }
+            )
+
+            RemoteDiagnosticsCard(
+                reportCount = remoteReportCount,
+                hostActivityCount = remoteHostActivityCount,
+                reportLog = remoteReportLog,
+                lastNoticeText = remoteLastNotice?.message,
+                featureEnabled = remoteEnabled,
+                onClear = { viewModel.clearRemoteDiagnostics() }
+            )
+
             // ── Device Section ───────────────────────────────────────
             SettingsSectionTitle("Device")
 
@@ -200,6 +360,118 @@ fun SettingsScreen(
     }
 }
 
+/** Shows Bluetooth LE remote activity, alongside legacy HID traffic when one exists. */
+@Composable
+private fun RemoteDiagnosticsCard(
+    reportCount: Int,
+    hostActivityCount: Int,
+    reportLog: List<LedReportLog>,
+    lastNoticeText: String?,
+    featureEnabled: Boolean,
+    onClear: () -> Unit
+) {
+    val timeFormat = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.US) }
+    val clipboard = LocalClipboardManager.current
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Diagnostics", style = MaterialTheme.typography.titleSmall)
+                Row {
+                    TextButton(onClick = {
+                        clipboard.setText(
+                            AnnotatedString(
+                                buildDiagnosticsReport(
+                                    reportCount, hostActivityCount, featureEnabled, reportLog, timeFormat
+                                )
+                            )
+                        )
+                    }) { Text("Copy") }
+                    TextButton(onClick = onClear) { Text("Clear") }
+                }
+            }
+
+            Text(
+                "Legacy HID LED reports: $reportCount",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                "Remote/Bluetooth events: $hostActivityCount",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            if (!featureEnabled) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "Mac Remote Control is OFF. Turn it on to advertise the Bluetooth LE " +
+                        "service for the Mac helper.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+
+            if (lastNoticeText != null) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "Last action: $lastNoticeText",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            if (reportLog.isEmpty()) {
+                Text(
+                    "No activity yet. Open WireKey Remote on the Mac; its connection and " +
+                        "every accepted Caps Lock trigger appear here.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                reportLog.asReversed().forEach { entry ->
+                    val timestamp = timeFormat.format(Date(entry.wallClockMs))
+                    if (entry.isHostActivity) {
+                        Text(
+                            text = "$timestamp  ${entry.source}  —  ${entry.rawHex}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        val state = when (entry.triggerBitOn) {
+                            true -> "lock key ON"
+                            false -> "lock key off"
+                            null -> "unparsed"
+                        }
+                        val edgeMark = if (entry.wasEdge) "  ← change" else ""
+                        val gap = entry.gapSincePreviousEdgeMs?.let { "  gap ${it}ms" } ?: ""
+                        Text(
+                            text = "$timestamp  [${entry.rawHex}]  $state$edgeMark$gap",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (entry.wasEdge) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "        via ${entry.source}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun SettingsSectionTitle(title: String) {
     Text(
@@ -208,4 +480,51 @@ fun SettingsSectionTitle(title: String) {
         color = MaterialTheme.colorScheme.primary,
         modifier = Modifier.padding(start = 16.dp, top = 24.dp, bottom = 8.dp)
     )
+}
+
+/**
+ * Renders the diagnostics panel as plain text for the clipboard.
+ *
+ * Whether the host sends LED reports at all can only be answered on the user's own Mac,
+ * so the evidence has to be able to travel back off the phone without adb.
+ */
+private fun buildDiagnosticsReport(
+    reportCount: Int,
+    hostActivityCount: Int,
+    featureEnabled: Boolean,
+    reportLog: List<LedReportLog>,
+    timeFormat: SimpleDateFormat
+): String = buildString {
+    appendLine("WireKey remote-control diagnostics")
+    appendLine("feature enabled: $featureEnabled")
+    appendLine("legacy HID LED reports: $reportCount")
+    appendLine("remote/Bluetooth events: $hostActivityCount")
+    appendLine("--")
+    if (reportLog.isEmpty()) {
+        appendLine("(log empty)")
+    } else {
+        reportLog.forEach { entry ->
+            val stamp = timeFormat.format(Date(entry.wallClockMs))
+            if (entry.isHostActivity) {
+                appendLine("$stamp  ${entry.source}  ${entry.rawHex}")
+            } else {
+                val state = when (entry.triggerBitOn) {
+                    true -> "ON"
+                    false -> "off"
+                    null -> "unparsed"
+                }
+                val edge = if (entry.wasEdge) " CHANGE" else ""
+                val gap = entry.gapSincePreviousEdgeMs?.let { " gap=${it}ms" } ?: ""
+                appendLine("$stamp  [${entry.rawHex}]  $state$edge$gap  via ${entry.source}")
+            }
+        }
+    }
+}
+
+private fun bleRemoteStateLabel(state: BleRemoteControlState): String = when (state) {
+    BleRemoteControlState.Disabled -> "Off — turn on Mac Remote Control to make this phone discoverable."
+    BleRemoteControlState.Starting -> "Starting Bluetooth LE service…"
+    BleRemoteControlState.Advertising -> "Ready — waiting for WireKey Remote on the Mac."
+    is BleRemoteControlState.Connected -> "Connected to ${state.deviceName}."
+    is BleRemoteControlState.Unavailable -> "Unavailable: ${state.reason}"
 }

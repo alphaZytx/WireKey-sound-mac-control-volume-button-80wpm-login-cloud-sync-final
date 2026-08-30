@@ -33,6 +33,10 @@ sealed class HidConnectionState {
     data class Error(val message: String) : HidConnectionState()
 }
 
+/** Renders a raw report for logging and the on-device diagnostics panel. */
+private fun ByteArray?.toHexString(): String =
+    this?.joinToString(" ") { String.format("%02X", it) } ?: "(null)"
+
 @SuppressLint("MissingPermission")
 class HidKeyboardController(private val context: Context) {
 
@@ -97,6 +101,9 @@ class HidKeyboardController(private val context: Context) {
                     isManualDisconnect = false
                     connectedDevice = device
                     _connectionState.value = HidConnectionState.Connected(device)
+                    lastLedState = 0
+                    val mode = if (hostProtocolMode == BluetoothHidDevice.PROTOCOL_BOOT_MODE) "boot" else "report"
+                    notifyHostActivity("CONNECTED", "link up, $mode protocol")
                     
                     // Start foreground service
                     val intent = Intent(context, ConnectionKeepAliveService::class.java)
@@ -127,24 +134,147 @@ class HidKeyboardController(private val context: Context) {
 
         override fun onGetReport(device: BluetoothDevice?, type: Byte, id: Byte, bufferSize: Int) {
             Log.d(tag, "onGetReport: type=$type, id=$id, bufferSize=$bufferSize")
+            notifyHostActivity("GET_REPORT", "type=$type id=$id bufferSize=$bufferSize")
+            answerGetReport(device, type, id, bufferSize)
         }
 
         override fun onSetReport(device: BluetoothDevice?, type: Byte, id: Byte, data: ByteArray?) {
-            Log.d(tag, "onSetReport: type=$type, id=$id")
+            Log.d(tag, "onSetReport: type=$type, id=$id, data=${data.toHexString()}")
+            // Forwarded regardless of [type]: the descriptor declares only Input and
+            // Output items (no Feature reports), so any SET_REPORT that reaches us is
+            // the LED block. Filtering on REPORT_TYPE_OUTPUT here would risk silently
+            // dropping the reports on a host that labels them differently.
+            notifyHostOutputReport(data, "onSetReport(type=$type)")
         }
 
         override fun onSetProtocol(device: BluetoothDevice?, protocol: Byte) {
             Log.d(tag, "onSetProtocol: protocol=$protocol")
+            hostProtocolMode = protocol
+            val name = if (protocol == BluetoothHidDevice.PROTOCOL_BOOT_MODE) "boot" else "report"
+            notifyHostActivity("SET_PROTOCOL", "$name mode (raw=$protocol)")
         }
 
         override fun onInterruptData(device: BluetoothDevice?, reportId: Byte, data: ByteArray?) {
-            Log.d(tag, "onInterruptData: reportId=$reportId")
+            Log.d(tag, "onInterruptData: reportId=$reportId, data=${data.toHexString()}")
+            notifyHostOutputReport(data, "onInterruptData")
         }
 
         override fun onVirtualCableUnplug(device: BluetoothDevice?) {
             Log.d(tag, "onVirtualCableUnplug")
+            notifyHostActivity("VIRTUAL_CABLE_UNPLUG", "host dropped the HID link")
             connectedDevice = null
             _connectionState.value = HidConnectionState.Disconnected
+        }
+    }
+
+    /**
+     * Receives raw HID *output* reports pushed down by the host -- in practice the 5-bit
+     * LED state block (Caps/Num/Scroll Lock) already declared in [hidKeyboardDescriptor].
+     *
+     * This is the only channel on which a host ever talks back to a HID keyboard, and it
+     * is what the Mac Remote Control feature listens on. Wired once by WireKeyApp; null
+     * until then, and left null in tests.
+     */
+    var hostOutputReportListener: ((data: ByteArray?, source: String) -> Unit)? = null
+
+    /**
+     * Receives every *other* host->device HID callback -- GET_REPORT, SET_PROTOCOL, cable
+     * unplug. None of these carry LED state, but they are how you tell "this Mac never
+     * talks to us at all" apart from "this Mac talks, it just doesn't push LED reports",
+     * which are two completely different problems with two completely different fixes.
+     */
+    var hostActivityListener: ((label: String, detail: String) -> Unit)? = null
+
+    /**
+     * Invoked on the Bluetooth callback executor, so a misbehaving listener must never be
+     * allowed to propagate out and take the HID callback thread down with it.
+     */
+    private fun notifyHostOutputReport(data: ByteArray?, source: String) {
+        // Remembered so a GET_REPORT for the Output report can be answered truthfully.
+        // Mirrors LockKeyGestureDetector.extractLedByte: with no Report IDs declared, the
+        // ID arrives as its own callback argument, so byte 0 is the LED byte -- unless it
+        // is a zero prefix from a stack that includes the ID in the payload anyway.
+        if (data != null && data.isNotEmpty()) {
+            lastLedState = if (data.size >= 2 && data[0].toInt() == 0) data[1] else data[0]
+        }
+        try {
+            hostOutputReportListener?.invoke(data, source)
+        } catch (e: Exception) {
+            Log.e(tag, "hostOutputReportListener threw", e)
+        }
+    }
+
+    private fun notifyHostActivity(label: String, detail: String) {
+        try {
+            hostActivityListener?.invoke(label, detail)
+        } catch (e: Exception) {
+            Log.e(tag, "hostActivityListener threw", e)
+        }
+    }
+
+    // ── Control-channel state, for answering the host's own requests ──────────
+
+    /** Last report we sent upstream; the truthful answer to GET_REPORT(Input). */
+    @Volatile
+    private var lastInputReport: ByteArray = ByteArray(8)
+
+    /** Last LED byte the host set; the truthful answer to GET_REPORT(Output). */
+    @Volatile
+    private var lastLedState: Byte = 0
+
+    /** Boot vs report protocol, as last chosen by the host. Diagnostics only. */
+    @Volatile
+    private var hostProtocolMode: Byte = BluetoothHidDevice.PROTOCOL_REPORT_MODE
+
+    /**
+     * Answers a host GET_REPORT, which the app previously logged and then ignored.
+     *
+     * That silence is very likely why Mac remote control never saw a single LED report.
+     * HIDP serializes the control channel: a host may not begin a new control transaction
+     * until the previous one is answered, and macOS issues a GET_REPORT shortly after
+     * connecting. Leaving it unanswered wedges that channel -- and SET_REPORT, which is how
+     * the host pushes the Caps/Num/Scroll-Lock LED block down, is a control transaction.
+     * Typing keeps working throughout because it flows the other way on the *interrupt*
+     * channel, which is exactly the half-broken picture that was being reported.
+     *
+     * Runs on the Bluetooth callback executor.
+     */
+    private fun answerGetReport(device: BluetoothDevice?, type: Byte, id: Byte, bufferSize: Int) {
+        val hid = hidDevice
+        if (device == null || hid == null) {
+            Log.w(tag, "Cannot answer GET_REPORT: device=$device, hid=$hid")
+            return
+        }
+
+        val reply: ByteArray? = when (type) {
+            BluetoothHidDevice.REPORT_TYPE_INPUT -> lastInputReport.copyOf()
+            BluetoothHidDevice.REPORT_TYPE_OUTPUT -> byteArrayOf(lastLedState)
+            // The descriptor declares no Feature reports, so anything else is a request we
+            // genuinely cannot serve. An explicit error still closes the transaction, which
+            // is the part that matters -- an unanswered one blocks everything behind it.
+            else -> null
+        }
+
+        try {
+            if (reply == null) {
+                hid.reportError(device, BluetoothHidDevice.ERROR_RSP_UNSUPPORTED_REQ)
+                notifyHostActivity("GET_REPORT reply", "unsupported type=$type -> error handshake")
+                return
+            }
+            // `bufferSize` is the minimum size the host requested, not a maximum.  In
+            // particular, never truncate an 8-byte input report to a smaller request:
+            // doing so makes the HID control transaction malformed and can leave the
+            // host's control channel stuck before it gets as far as an LED SET_REPORT.
+            // Padding is safe because the descriptor's unused report bits are zero.
+            val payload = if (bufferSize > reply.size) reply.copyOf(bufferSize) else reply
+            val sent = hid.replyReport(device, type, id, payload)
+            Log.d(tag, "replyReport(type=$type, id=$id) -> $sent, data=${payload.toHexString()}")
+            notifyHostActivity(
+                "GET_REPORT reply",
+                "type=$type sent=$sent data=${payload.toHexString()}"
+            )
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to answer GET_REPORT", e)
         }
     }
 
@@ -270,6 +400,7 @@ class HidKeyboardController(private val context: Context) {
         if (device != null && hid != null) {
             try {
                 // ID is 0 since our descriptor does not define Report IDs.
+                lastInputReport = reportBytes.copyOf()
                 val success = hid.sendReport(device, 0, reportBytes)
                 if (!success) {
                     Log.w(tag, "sendReport returned false")
@@ -281,6 +412,33 @@ class HidKeyboardController(private val context: Context) {
         } else {
             Log.w(tag, "Cannot send report: device=$device, hid=$hid")
         }
+    }
+
+    /**
+     * Presses a key, holds it for [holdMs], then releases it.
+     *
+     * Exists for the remote-control self-test, which taps the trigger's lock key so the
+     * host's LED reply can be observed without the user touching the Mac. Ordinary typing
+     * does not go through here -- it is driven by TypingSessionManager's own report pairs.
+     *
+     * The hold is the whole point. macOS applies a deliberate activation delay to Caps
+     * Lock -- it must be held down for tens of milliseconds before the host will accept it,
+     * which is what stops a brushed key from flipping your case mid-sentence. A down report
+     * followed immediately by an up report is discarded by the host before it changes any
+     * lock state, so it produces no LED report and proves nothing about the channel.
+     */
+    suspend fun sendKeyTap(keyCode: Int, holdMs: Long = DEFAULT_KEY_HOLD_MS) {
+        sendReport(HidReportBuilder.keyDownReport(keyCode))
+        delay(holdMs.milliseconds)
+        sendReport(HidReportBuilder.keyUpReport())
+    }
+
+    companion object {
+        /**
+         * Comfortably clears macOS's Caps Lock activation delay, which defaults to well
+         * under 100 ms, without being slow enough to feel like a stuck key.
+         */
+        const val DEFAULT_KEY_HOLD_MS = 250L
     }
 
     fun close() {

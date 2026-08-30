@@ -13,3 +13,10 @@
 local.properties
 .idea/
 app/build/
+
+# Third-party keystroke audio dataset (~314 MB), kept local: the app ships only the
+# derived sound packs in app/src/main/assets/sounds.
+Keystroke-Datasets-main/
+
+# Kotlin IDE/session artifacts
+.kotlin/

@@ -20,6 +20,12 @@ private const val CURSOR_MOVE_HOLD_MS = 12L
 class LiveModeViewModel : ViewModel() {
     private val controller = WireKeyApp.hidKeyboardController
 
+    // Click playback is triggered from *inside* the queued actions below, next to the
+    // report it belongs to, rather than when an action is enqueued: submit() returns
+    // immediately, so firing there would play a whole burst of clicks up front while the
+    // reports they belong to were still draining out over Bluetooth.
+    private val acoustics = WireKeyApp.acousticTypingEngine
+
     val connectionState: StateFlow<HidConnectionState> = controller.connectionState
 
     private val _isCtrlActive = MutableStateFlow(false)
@@ -78,6 +84,7 @@ class LiveModeViewModel : ViewModel() {
 
     private suspend fun pressKeyRepeated(keyCode: Int, times: Int, holdMs: Long = CURSOR_MOVE_HOLD_MS) {
         repeat(times) {
+            acoustics.onKeyCodeDown(keyCode)
             controller.sendReport(HidReportBuilder.keyDownReport(keyCode))
             delay(holdMs)
             controller.sendReport(HidReportBuilder.keyUpReport())
@@ -110,6 +117,7 @@ class LiveModeViewModel : ViewModel() {
         downReport[0] = (downReport[0].toInt() or extraModifiers).toByte()
 
         submit {
+            acoustics.onCharacterDown(char)
             controller.sendReport(downReport)
             delay(KEY_HOLD_MS)
             controller.sendReport(reports.second)
@@ -122,6 +130,7 @@ class LiveModeViewModel : ViewModel() {
         val extraModifiers = consumeStickyModifiers()
 
         submit {
+            acoustics.onKeyCodeDown(keyCode)
             controller.sendReport(HidReportBuilder.keyDownReport(keyCode, extraModifiers))
             delay(KEY_HOLD_MS)
             controller.sendReport(HidReportBuilder.keyUpReport())
@@ -185,6 +194,7 @@ class LiveModeViewModel : ViewModel() {
             pressKeyRepeated(HidKeyCodes.KEY_BACKSPACE, removedCount, holdMs = KEY_HOLD_MS)
             for (char in addedText) {
                 val reports = HidReportBuilder.charToReports(char) ?: continue
+                acoustics.onCharacterDown(char)
                 controller.sendReport(reports.first)
                 delay(KEY_HOLD_MS)
                 controller.sendReport(reports.second)

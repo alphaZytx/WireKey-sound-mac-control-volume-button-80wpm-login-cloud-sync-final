@@ -89,8 +89,8 @@ class ComposeModeViewModel : ViewModel() {
     val displayedTrailRanges: StateFlow<List<IntRange>> = combine(
         _sentTrailRanges, _pendingTrailStart, typingManager.lastSentCharIndex
     ) { committed, start, lastSentRelative ->
-        if (start >= 0 && lastSentRelative > 0) {
-            committed + IntRange(start, start + lastSentRelative)
+        if (start >= 0 && lastSentRelative >= 0) {
+            committed.plusElement(IntRange(start, start + lastSentRelative))
         } else {
             committed
         }
@@ -140,8 +140,8 @@ class ComposeModeViewModel : ViewModel() {
                 } else {
                     val start = _pendingTrailStart.value
                     val lastSentRelative = typingManager.lastSentCharIndex.value
-                    if (start >= 0 && lastSentRelative > 0) {
-                        _sentTrailRanges.value = _sentTrailRanges.value + IntRange(start, start + lastSentRelative)
+                    if (start >= 0 && lastSentRelative >= 0) {
+                        _sentTrailRanges.value = _sentTrailRanges.value.plusElement(IntRange(start, start + lastSentRelative))
                     }
                     _pendingTrailStart.value = -1
                 }
@@ -335,5 +335,28 @@ class ComposeModeViewModel : ViewModel() {
 
     fun updateDynamicWpm(wpm: Float) {
         typingManager.updateDynamicWpm(wpm.toInt())
+    }
+
+    // ── Mac Remote Control ───────────────────────────────────────────────────
+    // Pause and Resume are driven straight off the app-scoped TypingSessionManager and
+    // need nothing from this screen. Start does: only this ViewModel knows the draft and
+    // where the A/B markers sit, so it hands the coordinator a callback.
+    //
+    // The registration is identity-checked on unregister, so a ViewModel destroyed after
+    // its replacement has already registered cannot wipe the live handler.
+    private val remoteStartRegistration =
+        WireKeyApp.remoteControlCoordinator.registerStartHandler {
+            val textToSend = getTextToSend()
+            if (textToSend.isEmpty() || isSending.value) {
+                false
+            } else {
+                sendToPc()
+                true
+            }
+        }
+
+    override fun onCleared() {
+        remoteStartRegistration.unregister()
+        super.onCleared()
     }
 }

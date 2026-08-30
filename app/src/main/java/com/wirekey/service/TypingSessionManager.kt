@@ -113,6 +113,7 @@ class TypingSessionManager(private val context: Context) {
         _dynamicWpm.value = settings.targetWpm
         _activeCharIndex.value = -1
         _lastSentCharIndex.value = -1
+        WireKeyApp.acousticTypingEngine.resetCadenceState()
 
         startService()
 
@@ -209,6 +210,10 @@ class TypingSessionManager(private val context: Context) {
                             val reports = HidReportBuilder.charToReports(char)
                             if (reports != null) {
                                 val (down, up) = reports
+                                // The engine models the release itself, on a realistic
+                                // dwell; the 15 ms below is an HID inter-report gap, not
+                                // how long a finger rests on a key. See its class doc.
+                                WireKeyApp.acousticTypingEngine.onCharacterDown(char)
                                 controller.sendReport(down)
                                 delay((15 * currentMultiplier).toLong())
                                 controller.sendReport(up)
@@ -289,10 +294,11 @@ class TypingSessionManager(private val context: Context) {
                 while (_isPaused.value) { delay(50) }
                 
                 onBackspace(k)
+                WireKeyApp.acousticTypingEngine.onBackspaceTap()
                 controller.sendReport(down)
                 delay((15 * multiplier).toLong())
                 controller.sendReport(up)
-                
+
                 if (k < count - 1) {
                     val waitTime = if (k == count - 2) {
                         // Deceleration: Final tap is delayed for visual confirmation
@@ -313,36 +319,48 @@ class TypingSessionManager(private val context: Context) {
                 }
             }
         } else {
-            // Holding Trigger: Simulate OS-level hold
-            // 1st backspace (discrete tap)
-            while (_isPaused.value) { delay(50) }
-            
-            onBackspace(0)
-            controller.sendReport(down)
-            delay((15 * multiplier).toLong())
-            controller.sendReport(up)
-            
-            // Wait for initial OS repeat delay: strictly ~500ms (480-520ms)
-            val repeatDelay = (kotlin.random.Random.nextLong(480, 520) * multiplier).toLong()
-            var elapsed = 0L
-            while (elapsed < repeatDelay) {
+            // Holding Trigger: Simulate OS-level hold.
+            //
+            // Acoustically this whole branch is ONE keypress: the user holds backspace and
+            // the host OS generates the repeats, so the key is only physically struck and
+            // released once. Clicking per repeat (~30 ms apart) is what made long
+            // corrections sound like a burst rather than a held key.
+            try {
+                // 1st backspace (discrete tap)
                 while (_isPaused.value) { delay(50) }
-                val chunk = minOf(50L, repeatDelay - elapsed)
-                delay(chunk)
-                elapsed += chunk
-            }
-            
-            // Remaining (N - 1) backspaces at a highly consistent robotic repeat rate (~30ms cycle)
-            for (k in 1 until count) {
-                while (_isPaused.value) { delay(50) }
-                
-                onBackspace(k)
+
+                onBackspace(0)
+                WireKeyApp.acousticTypingEngine.onBackspaceHoldStart()
                 controller.sendReport(down)
                 delay((15 * multiplier).toLong())
                 controller.sendReport(up)
-                
-                val rate = (kotlin.random.Random.nextLong(13, 17) * multiplier).toLong() // 15 + ~15 = ~30ms total cycle
-                delay(rate)
+
+                // Wait for initial OS repeat delay: strictly ~500ms (480-520ms)
+                val repeatDelay = (kotlin.random.Random.nextLong(480, 520) * multiplier).toLong()
+                var elapsed = 0L
+                while (elapsed < repeatDelay) {
+                    while (_isPaused.value) { delay(50) }
+                    val chunk = minOf(50L, repeatDelay - elapsed)
+                    delay(chunk)
+                    elapsed += chunk
+                }
+
+                // Remaining (N - 1) backspaces at a highly consistent robotic repeat rate (~30ms cycle)
+                for (k in 1 until count) {
+                    while (_isPaused.value) { delay(50) }
+
+                    onBackspace(k)
+                    controller.sendReport(down)
+                    delay((15 * multiplier).toLong())
+                    controller.sendReport(up)
+
+                    val rate = (kotlin.random.Random.nextLong(13, 17) * multiplier).toLong() // 15 + ~15 = ~30ms total cycle
+                    delay(rate)
+                }
+            } finally {
+                // In finally so a cancelled send still releases the key acoustically
+                // instead of leaving the engine believing backspace is still held.
+                WireKeyApp.acousticTypingEngine.onBackspaceHoldEnd()
             }
         }
     }

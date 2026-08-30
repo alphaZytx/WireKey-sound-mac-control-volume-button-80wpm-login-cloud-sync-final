@@ -19,6 +19,8 @@ object HidKeyCodes {
     const val KEY_TAB = 0x2B
     const val KEY_SPACE = 0x2C
     const val KEY_CAPSLOCK = 0x39
+    const val KEY_SCROLLLOCK = 0x47
+    const val KEY_NUMLOCK = 0x53
     
     // F1..F12
     const val KEY_F1 = 0x3A
@@ -44,6 +46,45 @@ object HidKeyCodes {
     const val KEY_END = 0x4D
 
     val charMap: Map<Char, Pair<Int, Boolean>> = buildCharMap()
+
+    // HID keycode -> Mechvibes/JS KeyboardEvent.code physical key name, e.g. 0x04 -> "KeyA".
+    // Single source of truth for the Acoustic Typing Feedback Engine's char-to-sound lookup:
+    // it composes through charMap's keyCode rather than keying off Char directly, so if
+    // charMap ever gains a new character its sound mapping can't silently drift out of sync —
+    // it just has no physical key name yet, which resolves to "no sound" rather than a wrong one.
+    val physicalKeyName: Map<Int, String> = buildPhysicalKeyNameMap()
+
+    private fun buildPhysicalKeyNameMap(): Map<Int, String> {
+        val map = mutableMapOf<Int, String>()
+
+        for (i in 0..25) {
+            map[0x04 + i] = "Key" + ('A' + i)
+        }
+
+        for (i in 1..9) {
+            map[0x1E + (i - 1)] = "Digit$i"
+        }
+        map[0x27] = "Digit0"
+
+        map[0x2D] = "Minus"
+        map[0x2E] = "Equal"
+        map[0x2F] = "BracketLeft"
+        map[0x30] = "BracketRight"
+        map[0x31] = "Backslash"
+        map[0x33] = "Semicolon"
+        map[0x34] = "Quote"
+        map[0x35] = "Backquote"
+        map[0x36] = "Comma"
+        map[0x37] = "Period"
+        map[0x38] = "Slash"
+
+        map[KEY_SPACE] = "Space"
+        map[KEY_ENTER] = "Enter"
+        map[KEY_TAB] = "Tab"
+        map[KEY_BACKSPACE] = "Backspace"
+
+        return map
+    }
 
     private fun buildCharMap(): Map<Char, Pair<Int, Boolean>> {
         val map = mutableMapOf<Char, Pair<Int, Boolean>>()
