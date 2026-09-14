@@ -15,8 +15,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.wirekey.cloud.CloudAuthState
+import com.wirekey.cloud.SupabaseConfig
 import com.wirekey.remote.BleRemoteControlState
 import com.wirekey.remote.LedReportLog
+import com.wirekey.ui.cloud.syncStatusLabel
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -26,6 +29,7 @@ import kotlin.math.roundToInt
 @Composable
 fun SettingsScreen(
     onNavigateBack: () -> Unit,
+    onNavigateToAccount: () -> Unit = {},
     viewModel: SettingsViewModel = viewModel()
 ) {
     val context = LocalContext.current
@@ -46,6 +50,9 @@ fun SettingsScreen(
     val remoteHostActivityCount by viewModel.remoteHostActivityCount.collectAsState()
     val remoteLastNotice by viewModel.remoteLastNotice.collectAsState()
 
+    val cloudAuthState by viewModel.cloudAuthState.collectAsState()
+    val cloudSyncStatus by viewModel.cloudSyncStatus.collectAsState()
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -59,6 +66,57 @@ fun SettingsScreen(
                 .padding(paddingValues)
                 .verticalScroll(rememberScrollState())
         ) {
+            // ── Cloud Sync Section ───────────────────────────────────
+            // Always shown, even with no Supabase project in the build. Hiding it made an
+            // unconfigured build indistinguishable from an older one carrying no cloud code
+            // at all — this row reports which of the two you are looking at.
+            run {
+                SettingsSectionTitle("Cloud Sync")
+
+                if (!SupabaseConfig.isConfigured) {
+                    ListItem(
+                        headlineContent = { Text("Not configured in this build") },
+                        supportingContent = {
+                            Text(
+                                "Add supabase.url and supabase.anonKey to local.properties, " +
+                                    "then rebuild and reinstall."
+                            )
+                        }
+                    )
+                    return@run
+                }
+
+                ListItem(
+                    headlineContent = {
+                        Text(
+                            when (val state = cloudAuthState) {
+                                is CloudAuthState.SignedIn -> state.email ?: "Signed in"
+                                is CloudAuthState.Loading -> "Checking your session…"
+                                else -> "Sign in or create an account"
+                            }
+                        )
+                    },
+                    supportingContent = {
+                        Text(
+                            if (cloudAuthState is CloudAuthState.SignedIn) {
+                                "Compose text syncs to every phone on this account · " +
+                                    syncStatusLabel(cloudSyncStatus)
+                            } else {
+                                "Keep your Compose Mode text in step across phones"
+                            }
+                        )
+                    },
+                    modifier = Modifier.clickable { onNavigateToAccount() }
+                )
+
+                // Which project this build actually points at — the answer to "is the app
+                // on my phone the one that was just built?".
+                ListItem(
+                    headlineContent = { Text("Supabase project") },
+                    supportingContent = { Text(SupabaseConfig.url.removePrefix("https://")) }
+                )
+            }
+
             // ── Typing Settings Section ──────────────────────────────
             SettingsSectionTitle("Typing Cadence")
 

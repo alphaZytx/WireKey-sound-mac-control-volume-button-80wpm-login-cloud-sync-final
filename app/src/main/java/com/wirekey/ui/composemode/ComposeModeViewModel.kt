@@ -3,13 +3,21 @@ package com.wirekey.ui.composemode
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.wirekey.WireKeyApp
+import com.wirekey.cloud.CloudAuthState
+import com.wirekey.cloud.SupabaseConfig
+import com.wirekey.cloud.SyncStatus
 import com.wirekey.data.SentMessage
+import com.wirekey.data.SettingsRepository
 import com.wirekey.util.CadenceSettings
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -24,6 +32,7 @@ enum class MarkerPlacementMode { NONE, START, END }
 class ComposeModeViewModel : ViewModel() {
     private val controller = WireKeyApp.hidKeyboardController
     private val settingsRepo = WireKeyApp.settingsRepository
+    private val syncCoordinator = WireKeyApp.composeSyncCoordinator
 
     private val _draftText = MutableStateFlow("")
     val draftText: StateFlow<String> = _draftText.asStateFlow()
@@ -109,10 +118,33 @@ class ComposeModeViewModel : ViewModel() {
             naturalTypingEnabled = natural,
             codeEditorMode = codeEditor
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), CadenceSettings.DEFAULT)
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        // Placeholder for the frame before DataStore emits. Uses the repository's own default
+        // so the speed shown never flickers from one value to another on open.
+        CadenceSettings(targetWpm = SettingsRepository.DEFAULT_TARGET_WPM)
+    )
 
     val sendHistory: StateFlow<List<SentMessage>> = settingsRepo.sendHistory
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // ── Cloud sync ───────────────────────────────────────────────────────────
+    // Entirely separate from the Bluetooth path: a sync never sends a keystroke, and a send
+    // never touches the cloud. The only thing they share is the draft text itself.
+
+    /** False on builds with no Supabase credentials — the whole sync UI is then hidden. */
+    val cloudSyncAvailable: Boolean = SupabaseConfig.isConfigured
+
+    val syncStatus: StateFlow<SyncStatus> = syncCoordinator.syncStatus
+
+    val isSignedIn: StateFlow<Boolean> = WireKeyApp.cloudAuthRepository.authState
+        .map { it is CloudAuthState.SignedIn }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    /** Fires whenever the editor has just been replaced from the cloud, so the UI can say so. */
+    private val _remoteUpdateEvent = MutableSharedFlow<Unit>()
+    val remoteUpdateEvent: SharedFlow<Unit> = _remoteUpdateEvent.asSharedFlow()
 
     init {
         // Record every message that finishes sending (not ones that were cancelled
@@ -126,6 +158,14 @@ class ComposeModeViewModel : ViewModel() {
                     settingsRepo.addToHistory(sentText)
                 }
             }
+        }
+
+        // The cloud copy is the source of truth: every version that arrives — the one fetched
+        // at sign-in, and every Sync pressed on another phone afterwards — replaces the local
+        // editor outright, with no prompt and no merge. Emissions continue while the user is
+        // on another screen; the flow replays the newest one when Compose Mode reopens.
+        viewModelScope.launch {
+            syncCoordinator.cloudText.collect { remoteText -> applyRemoteText(remoteText) }
         }
 
         // Freeze this send's start the instant it begins, then fold the range it
@@ -262,6 +302,41 @@ class ComposeModeViewModel : ViewModel() {
         _pendingTrailStart.value = -1
     }
 
+    /**
+     * Replaces the editor with the cloud copy of the document. Unconditional by design: the
+     * latest Sync anywhere on the account wins, whatever is on screen here.
+     *
+     * Markers and the sent-text trail are dropped with it — both are character offsets into
+     * the text that just went away, and keeping them would leave the shading pointing at
+     * unrelated characters. An in-flight send is deliberately *not* cancelled: the typing
+     * session works from its own snapshot taken when it started, so it finishes typing what
+     * the user asked for. Only its live trail highlight is stopped, since the text underneath
+     * it no longer matches.
+     *
+     * Identical text is a no-op, which is what makes the echo of this phone's own Sync
+     * harmless — the result would be the same text either way, so there is nothing to gain
+     * from clearing the user's markers over it.
+     */
+    private suspend fun applyRemoteText(text: String) {
+        if (_draftText.value == text) return
+        _draftText.value = text
+        clearMarkers()
+        _sentTrailRanges.value = emptyList()
+        _pendingTrailStart.value = -1
+        _remoteUpdateEvent.emit(Unit)
+    }
+
+    /**
+     * Pushes the complete editor contents to the cloud, replacing whatever was there.
+     *
+     * Always the *whole* draft, never the A→B selection: the markers choose what gets typed
+     * over Bluetooth, which has nothing to do with what the document contains.
+     */
+    fun syncNow() {
+        if (!cloudSyncAvailable) return
+        viewModelScope.launch { syncCoordinator.push(_draftText.value) }
+    }
+
     /** Populates the draft box with a past message. Blocked mid-send (unless paused) to avoid clobbering it. */
     fun restoreFromHistory(text: String) {
         if (isSending.value && !isPaused.value) return
@@ -335,6 +410,18 @@ class ComposeModeViewModel : ViewModel() {
 
     fun updateDynamicWpm(wpm: Float) {
         typingManager.updateDynamicWpm(wpm.toInt())
+    }
+
+    /**
+     * Nudges the live typing speed by one volume-key step, clamped to the slider's range.
+     *
+     * Relative rather than absolute so the keys and the slider stay in agreement: both write
+     * the same TypingSessionManager value, which the send loop re-reads every keystroke.
+     */
+    fun adjustDynamicWpm(deltaWpm: Int) {
+        typingManager.updateDynamicWpm(
+            VolumeKeyWpmController.nextWpm(typingManager.dynamicWpm.value, deltaWpm)
+        )
     }
 
     // ── Mac Remote Control ───────────────────────────────────────────────────

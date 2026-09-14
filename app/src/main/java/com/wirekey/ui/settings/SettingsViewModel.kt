@@ -51,6 +51,12 @@ class SettingsViewModel : ViewModel() {
     val remoteHostActivityCount = remoteCoordinator.hostActivityCount
     val remoteLastNotice = remoteCoordinator.lastNotice
 
+    // ── Cloud Sync ───────────────────────────────────────────────────────────
+    // Read-only here: the Settings row only reports who is signed in and what sync is doing,
+    // and hands off to the account screen for anything that changes state.
+    val cloudAuthState = WireKeyApp.cloudAuthRepository.authState
+    val cloudSyncStatus = WireKeyApp.composeSyncCoordinator.syncStatus
+
     fun setTargetWpm(wpm: Int) {
         viewModelScope.launch { repository.setTargetWpm(wpm) }
     }

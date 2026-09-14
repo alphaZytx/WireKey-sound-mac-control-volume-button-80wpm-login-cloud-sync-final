@@ -22,6 +22,17 @@ class WireKeyApp : Application() {
 
         lateinit var bleRemoteControlServer: com.wirekey.remote.BleRemoteControlServer
             private set
+
+        /** Supabase account state. Independent of Bluetooth — see [com.wirekey.cloud]. */
+        lateinit var cloudAuthRepository: com.wirekey.cloud.CloudAuthRepository
+            private set
+
+        /** Cloud copy of the Compose Mode text, kept in step across the account's phones. */
+        lateinit var composeSyncCoordinator: com.wirekey.cloud.ComposeSyncCoordinator
+            private set
+
+        /** Volume keys -> Compose Mode typing speed. Stateless until a screen registers. */
+        val volumeKeyWpmController = com.wirekey.ui.composemode.VolumeKeyWpmController()
     }
 
     override fun onCreate() {
@@ -53,6 +64,12 @@ class WireKeyApp : Application() {
         // Unlike Bluetooth HID LED reports, this channel carries an explicit command from
         // the macOS helper. It is how physical Caps Lock presses on a Mac reliably reach
         // the phone.
+        // Cloud sync. Constructed unconditionally but inert without Supabase credentials in
+        // the build, and never in the path of a keystroke: nothing below this line can affect
+        // the HID connection or the typing engine.
+        cloudAuthRepository = com.wirekey.cloud.CloudAuthRepository()
+        composeSyncCoordinator = com.wirekey.cloud.ComposeSyncCoordinator(cloudAuthRepository)
+
         bleRemoteControlServer = com.wirekey.remote.BleRemoteControlServer(
             context = this,
             settingsRepository = settingsRepository,

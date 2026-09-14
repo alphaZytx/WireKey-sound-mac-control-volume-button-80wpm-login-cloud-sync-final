@@ -9,10 +9,24 @@ import androidx.compose.ui.Modifier
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.wirekey.WireKeyApp
+import com.wirekey.cloud.CloudAuthState
+import com.wirekey.cloud.SupabaseConfig
 
 @Composable
 fun WireKeyNavigation() {
     val navController = rememberNavController()
+
+    /**
+     * "Account" means the sign-in form to a signed-out user and the account page to a signed-in
+     * one. Deciding it here keeps both callers — Compose Mode and Settings — from having to
+     * know about auth state at all.
+     */
+    val navigateToAccount = {
+        val signedIn = SupabaseConfig.isConfigured &&
+            WireKeyApp.cloudAuthRepository.authState.value is CloudAuthState.SignedIn
+        navController.navigate(if (signedIn) "account" else "auth")
+    }
 
     NavHost(navController = navController, startDestination = "pairing") {
         composable("pairing") {
@@ -29,7 +43,8 @@ fun WireKeyNavigation() {
                 },
                 onNavigateToSettings = {
                     navController.navigate("settings")
-                }
+                },
+                onNavigateToAccount = { navigateToAccount() }
             )
         }
         composable("live_mode") {
@@ -42,12 +57,32 @@ fun WireKeyNavigation() {
         composable("compose_mode") {
             com.wirekey.ui.composemode.ComposeModeScreen(
                 onNavigateToSettings = { navController.navigate("settings") },
-                onNavigateBack = { navController.popBackStack("pairing", false) }
+                onNavigateBack = { navController.popBackStack("pairing", false) },
+                onNavigateToAccount = { navigateToAccount() }
             )
         }
         composable("settings") {
             com.wirekey.ui.settings.SettingsScreen(
-                onNavigateBack = { navController.popBackStack() }
+                onNavigateBack = { navController.popBackStack() },
+                onNavigateToAccount = { navigateToAccount() }
+            )
+        }
+        composable("auth") {
+            com.wirekey.ui.cloud.AuthScreen(
+                onNavigateBack = { navController.popBackStack() },
+                // Replaces itself in the back stack: once signed in, "back" should return to
+                // whatever screen sent the user here, not to the login form.
+                onSignedIn = { navController.popBackStack() }
+            )
+        }
+        composable("account") {
+            com.wirekey.ui.cloud.AccountScreen(
+                onNavigateBack = { navController.popBackStack() },
+                onSignedOut = {
+                    navController.navigate("auth") {
+                        popUpTo("account") { inclusive = true }
+                    }
+                }
             )
         }
     }

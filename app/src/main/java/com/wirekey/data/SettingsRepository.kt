@@ -22,6 +22,13 @@ data class SentMessage(val text: String, val timestampMillis: Long)
 
 class SettingsRepository(private val context: Context) {
     companion object {
+        /**
+         * Typing speed used until the user picks one in Settings. Within [setTargetWpm]'s
+         * 20..150 clamp, and the single source of truth for every other default: the Compose
+         * Mode speed slider and TypingSessionManager both start here, so nothing can disagree.
+         */
+        const val DEFAULT_TARGET_WPM = 80
+
         val TARGET_WPM = intPreferencesKey("target_wpm")
         val HUMAN_TYPING_ENABLED = booleanPreferencesKey("human_typing_enabled")
         val NATURAL_TYPING_ENABLED = booleanPreferencesKey("natural_typing_enabled")
@@ -48,7 +55,7 @@ class SettingsRepository(private val context: Context) {
     }
 
     val targetWpm: Flow<Int> = context.dataStore.data.map { preferences ->
-        preferences[TARGET_WPM] ?: 60
+        preferences[TARGET_WPM] ?: DEFAULT_TARGET_WPM
     }
 
     val humanTypingEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->

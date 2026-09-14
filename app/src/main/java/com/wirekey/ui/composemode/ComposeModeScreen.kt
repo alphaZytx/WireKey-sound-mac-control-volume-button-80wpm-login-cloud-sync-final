@@ -38,7 +38,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.wirekey.WireKeyApp
+import com.wirekey.cloud.SyncStatus
 import com.wirekey.data.SentMessage
+import com.wirekey.ui.cloud.syncStatusColor
+import com.wirekey.ui.cloud.syncStatusLabel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -47,6 +51,7 @@ import kotlinx.coroutines.launch
 fun ComposeModeScreen(
     onNavigateToSettings: () -> Unit,
     onNavigateBack: () -> Unit,
+    onNavigateToAccount: () -> Unit = {},
     viewModel: ComposeModeViewModel = viewModel()
 ) {
     val draftText by viewModel.draftText.collectAsState()
@@ -63,10 +68,23 @@ fun ComposeModeScreen(
     val activeCharIndex by viewModel.activeCharIndex.collectAsState()
     val sentTrailRanges by viewModel.displayedTrailRanges.collectAsState()
 
+    val syncStatus by viewModel.syncStatus.collectAsState()
+    val isSignedIn by viewModel.isSignedIn.collectAsState()
+
     val markerA by viewModel.markerA.collectAsState()
     val markerB by viewModel.markerB.collectAsState()
     val partialExecutionEnabled by viewModel.partialExecutionEnabled.collectAsState()
     val placementMode by viewModel.placementMode.collectAsState()
+
+    // Claim the volume keys for typing speed for exactly as long as this screen is composed.
+    // Leaving Compose Mode disposes this and hands the keys straight back to the system, so
+    // no other screen -- and nothing outside the app -- is affected.
+    DisposableEffect(viewModel) {
+        val registration = WireKeyApp.volumeKeyWpmController.register { deltaWpm ->
+            viewModel.adjustDynamicWpm(deltaWpm)
+        }
+        onDispose { registration.unregister() }
+    }
 
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
@@ -104,6 +122,24 @@ fun ComposeModeScreen(
         }
     }
 
+    // The editor changing under the user's hands is startling without an explanation. This
+    // reports what happened after the fact — it is not a confirmation prompt, and the text
+    // has already been replaced by the time it appears.
+    LaunchedEffect(Unit) {
+        viewModel.remoteUpdateEvent.collectLatest {
+            snackbarHostState.showSnackbar("Compose text updated from cloud")
+        }
+    }
+
+    // Failures are surfaced once, with the reason; the status line keeps saying "Sync failed"
+    // for as long as it is true.
+    LaunchedEffect(syncStatus) {
+        val status = syncStatus
+        if (status is SyncStatus.Failed) {
+            snackbarHostState.showSnackbar("Sync failed — ${status.message}")
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -123,6 +159,20 @@ fun ComposeModeScreen(
                 .padding(paddingValues)
                 .padding(16.dp)
         ) {
+            // ── Cloud sync bar ───────────────────────────────────────────
+            // Above the existing controls and outside every one of them, so nothing about
+            // markers, speed or sending changes. Absent entirely on builds with no Supabase
+            // project, which keeps Compose Mode pixel-identical for anyone not using sync.
+            if (viewModel.cloudSyncAvailable) {
+                CloudSyncBar(
+                    status = syncStatus,
+                    isSignedIn = isSignedIn,
+                    onSync = { viewModel.syncNow() },
+                    onOpenAccount = onNavigateToAccount
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
             // ── Marker placement toolbar ─────────────────────────────────
             if (!isSending) {
                 MarkerToolbar(
@@ -361,6 +411,72 @@ fun ComposeModeScreen(
             onClearAll = { viewModel.clearHistory() },
             onDismiss = { showHistoryDialog = false }
         )
+    }
+}
+
+// ── Cloud Sync Bar ───────────────────────────────────────────────────────────
+
+/**
+ * One slim row: what sync is doing on the left, the button that pushes this editor to the
+ * cloud on the right.
+ *
+ * Sync stays enabled during a send. Pushing text to Supabase has no effect on keystrokes
+ * already in flight, so there is no reason to take the control away.
+ */
+@Composable
+private fun CloudSyncBar(
+    status: SyncStatus,
+    isSignedIn: Boolean,
+    onSync: () -> Unit,
+    onOpenAccount: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(6.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (status is SyncStatus.Syncing || status is SyncStatus.Connecting) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(12.dp),
+                    strokeWidth = 1.5.dp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+            }
+
+            Text(
+                text = syncStatusLabel(status),
+                style = MaterialTheme.typography.labelMedium,
+                color = syncStatusColor(status),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+
+            TextButton(
+                onClick = onOpenAccount,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                Text(
+                    text = if (isSignedIn) "Account" else "Sign in",
+                    style = MaterialTheme.typography.labelMedium
+                )
+            }
+
+            if (isSignedIn) {
+                TextButton(
+                    onClick = onSync,
+                    enabled = status !is SyncStatus.Syncing,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text(text = "Sync", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
     }
 }
 

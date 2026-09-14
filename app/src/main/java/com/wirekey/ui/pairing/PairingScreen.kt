@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -34,6 +35,7 @@ fun PairingScreen(
     onNavigateToLiveMode: () -> Unit,
     onNavigateToComposeMode: () -> Unit,
     onNavigateToSettings: () -> Unit,
+    onNavigateToAccount: () -> Unit = {},
     viewModel: PairingViewModel = viewModel()
 ) {
     val context = LocalContext.current
@@ -90,6 +92,15 @@ fun PairingScreen(
                         IconButton(onClick = { viewModel.refreshBondedDevices() }) {
                             Icon(Icons.Default.Refresh, contentDescription = "Refresh devices")
                         }
+                    }
+                    // Cloud sync's front door. On the start destination because the other
+                    // way in — Compose Mode — is only reachable once a host is connected,
+                    // which would hide the whole feature from anyone not yet paired.
+                    IconButton(onClick = onNavigateToAccount) {
+                        Icon(
+                            Icons.Default.AccountCircle,
+                            contentDescription = "Cloud sync account"
+                        )
                     }
                     IconButton(onClick = onNavigateToSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")

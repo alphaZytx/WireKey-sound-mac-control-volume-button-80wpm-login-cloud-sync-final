@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import com.wirekey.WireKeyApp
 import com.wirekey.bluetooth.HidReportBuilder
+import com.wirekey.data.SettingsRepository
 import com.wirekey.util.CadenceSettings
 import com.wirekey.util.HidKeyCodes
 import com.wirekey.util.TypingCadenceEngine
@@ -43,7 +44,7 @@ class TypingSessionManager(private val context: Context) {
     private val _sendCompleteEvent = MutableSharedFlow<Unit>()
     val sendCompleteEvent: SharedFlow<Unit> = _sendCompleteEvent.asSharedFlow()
 
-    private val _dynamicWpm = MutableStateFlow(60)
+    private val _dynamicWpm = MutableStateFlow(SettingsRepository.DEFAULT_TARGET_WPM)
     val dynamicWpm: StateFlow<Int> = _dynamicWpm.asStateFlow()
 
     private val _activeCharIndex = MutableStateFlow(-1)
